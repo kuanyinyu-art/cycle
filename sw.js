@@ -1,5 +1,5 @@
 // 讓 App 沒有網路也能打開：先試著拿最新版，拿不到就用存在手機裡的版本。
-const CACHE = 'cycle-v4';
+const CACHE = 'cycle-v5';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest'];
 const ICONS = ['icon-180.png', 'icon-192.png', 'icon-512.png'];
 

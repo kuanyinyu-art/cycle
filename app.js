@@ -2,7 +2,7 @@
 /* 週期 — 個人生理期紀錄。所有資料只存在這支手機（瀏覽器的本機儲存空間）。 */
 
 const STORE_KEY = 'cycle-app-v1';
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 const DEFAULT_SYMPTOMS = ['頭痛', '頭暈', '腹脹', '腸胃不適', '長痘', '疲倦', '失眠', '腰痠', '胸部脹痛', '水腫', '嘴饞／食慾變化', '分泌物變化'];
 const FLOW = [['light', '少'], ['medium', '中'], ['heavy', '多']];
@@ -73,19 +73,23 @@ if (navigator.storage && navigator.storage.persist) navigator.storage.persist().
 /* ---------- 計算：平均、預測 ---------- */
 const sortedPeriods = () => [...state.periods].sort((a, b) => a.start < b.start ? -1 : 1);
 
+const median = a => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+// 預測方式：用最近 12 次「一般長度」週期（21–38 天）的中位數，
+// 偶爾特別早或特別晚的週期不會把預測拉走，但會反映在「前後約幾天」裡。
 function computeStats() {
   const ps = sortedPeriods();
   const cycles = [];
   for (let i = 1; i < ps.length; i++) {
     const len = diffDays(ps[i - 1].start, ps[i].start);
-    if (len >= 15 && len <= 60) cycles.push(len);
+    if (len >= 15 && len <= 90) cycles.push(len);
   }
-  const recent = cycles.slice(-6);
-  const cycleLen = recent.length ? Math.round(avg(recent)) : state.settings.cycleLength;
+  const usual = cycles.filter(n => n >= 21 && n <= 38);
+  const recent = usual.slice(-12);
+  const cycleLen = recent.length ? Math.round(median(recent)) : state.settings.cycleLength;
   const closed = ps.filter(p => p.end).map(p => diffDays(p.start, p.end) + 1).filter(n => n >= 1 && n <= MAX_PERIOD_DAYS).slice(-6);
-  const periodLen = closed.length ? Math.round(avg(closed)) : state.settings.periodLength;
+  const periodLen = closed.length ? Math.round(median(closed)) : state.settings.periodLength;
   let range = null;
-  if (recent.length >= 2) {
+  if (recent.length >= 3) {
     const m = avg(recent);
     const sd = Math.sqrt(avg(recent.map(x => (x - m) ** 2)));
     range = Math.max(1, Math.min(7, Math.round(sd)));
@@ -350,8 +354,8 @@ function renderHistory() {
   const stats = computeStats();
   const ps = stats.ps;
   $('stats').innerHTML = `
-    <div class="card stat"><div class="v">${stats.recent.length ? stats.cycleLen : '—'}<small>天</small></div><div class="k">平均週期</div></div>
-    <div class="card stat"><div class="v">${ps.some(p => p.end) ? stats.periodLen : '—'}<small>天</small></div><div class="k">平均經期</div></div>
+    <div class="card stat"><div class="v">${stats.recent.length ? stats.cycleLen : '—'}<small>天</small></div><div class="k">一般週期</div></div>
+    <div class="card stat"><div class="v">${ps.some(p => p.end) ? stats.periodLen : '—'}<small>天</small></div><div class="k">一般經期</div></div>
     <div class="card stat"><div class="v">${ps.length}<small>次</small></div><div class="k">已記錄</div></div>`;
   if (!ps.length) {
     $('history').innerHTML = `<div class="empty"><div class="em">○</div>還沒有紀錄<br>到月曆點一下日期就可以開始</div>`;
@@ -411,8 +415,8 @@ function renderSettings() {
     <button class="item" data-act="import"><span class="label">匯入備份<small>會取代目前手機上的資料</small></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
   </div></div>
 
-  <div class="group"><div class="group-title">之後開放</div><div class="card">
-    <div class="item muted"><span class="label">從小月曆搬移舊紀錄</span><span class="val">準備中</span></div>
+  <div class="group"><div class="group-title">搬移舊紀錄</div><div class="card">
+    <button class="item" data-act="import"><span class="label">加入舊紀錄<small>選 Claude 給你的舊紀錄檔，手機上原本的紀錄會保留</small></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
   </div></div>
 
   <div class="group"><div class="card">
@@ -563,6 +567,21 @@ async function exportBackup() {
 async function importBackup(file) {
   let parsed;
   try { parsed = JSON.parse(await file.text()); } catch (e) { toast('這個檔案讀不出來'); return; }
+  // 舊紀錄搬移檔：加進現有紀錄，不會蓋掉
+  if (parsed && parsed.app === 'cycle-import' && Array.isArray(parsed.periods)) {
+    const incoming = normalize({ periods: parsed.periods }).periods;
+    const overlaps = (a, b) => {
+      const ae = a.end || addDays(a.start, 6), be = b.end || addDays(b.start, 6);
+      return a.start <= be && b.start <= ae;
+    };
+    const add = incoming.filter(p => !state.periods.some(q => overlaps(p, q)));
+    const ok = await confirmDialog('加入舊紀錄？', `檔案裡有 ${incoming.length} 次生理期紀錄，其中 ${add.length} 次會加進來。\n手機上原本的紀錄都會保留。`, '加入');
+    if (!ok) return;
+    state.periods.push(...add);
+    save(); render();
+    toast(`已加入 ${add.length} 次紀錄`);
+    return;
+  }
   const data = parsed && parsed.data ? parsed.data : parsed;
   if (!data || !Array.isArray(data.periods)) { toast('這不是週期的備份檔'); return; }
   const incoming = normalize(data);

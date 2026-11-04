@@ -1,0 +1,15 @@
+name = "cycle-reminder"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+send_metrics = false
+
+[vars]
+VAPID_PUBLIC = "BIuMVnnB8EJQ0ZIJ0wIlEELXNkIc35D_W1J5wq_bXQShlHXRGFHZg3OlZenGKhvPh9gdVuogrYaMhzg88rYspAE"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "729a7fe79b59451b857f8a2b2d1dbb35"
+
+[triggers]
+crons = ["*/15 * * * *"]

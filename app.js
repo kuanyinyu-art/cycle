@@ -2,13 +2,17 @@
 /* 週期 — 個人生理期紀錄。所有資料只存在這支手機（瀏覽器的本機儲存空間）。 */
 
 const STORE_KEY = 'cycle-app-v1';
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 const DEFAULT_SYMPTOMS = ['頭痛', '頭暈', '腹脹', '腸胃不適', '長痘', '疲倦', '失眠', '腰痠', '胸部脹痛', '水腫', '嘴饞／食慾變化', '分泌物變化'];
 const FLOW = [['light', '少'], ['medium', '中'], ['heavy', '多']];
 const PAIN = [['none', '無'], ['mild', '輕'], ['moderate', '中'], ['severe', '重']];
 const MOOD = [['happy', '開心'], ['calm', '平靜'], ['irritable', '煩躁'], ['low', '低落'], ['anxious', '焦慮']];
 const MAX_PERIOD_DAYS = 14;
+
+// 提醒通知小服務（放在 Cloudflare）
+const PUSH_SERVER = 'https://cycle-reminder.kuanyinyu.workers.dev';
+const VAPID_PUBLIC = 'BIuMVnnB8EJQ0ZIJ0wIlEELXNkIc35D_W1J5wq_bXQShlHXRGFHZg3OlZenGKhvPh9gdVuogrYaMhzg88rYspAE';
 
 /* ---------- 日期小工具 ---------- */
 const pad = n => String(n).padStart(2, '0');
@@ -55,9 +59,13 @@ function load() {
   catch (e) { return blank(); }
 }
 let state = load();
+function writeStore() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); return true; }
+  catch (e) { toast('儲存失敗，請先匯出備份'); return false; }
+}
 function save() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
-  catch (e) { toast('儲存失敗，請先匯出備份'); }
+  writeStore();
+  schedulePushSync();
 }
 // 請手機不要自動清掉資料
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
@@ -382,6 +390,10 @@ function renderSettings() {
       <span class="stepper"><button data-step="periodLength" data-d="-1">−</button><output>${s.periodLength} 天</output><button data-step="periodLength" data-d="1">＋</button></span></div>
   </div></div>
 
+  <div class="group"><div class="group-title">提醒通知</div><div class="card">
+    ${reminderSettingsHtml()}
+  </div></div>
+
   <div class="group"><div class="group-title">外觀</div><div class="card">
     <div class="item"><span class="label">顏色</span>
       <span class="seg">${[['dark', '深色'], ['light', '淺色'], ['auto', '跟手機']].map(([k, l]) =>
@@ -400,7 +412,6 @@ function renderSettings() {
   </div></div>
 
   <div class="group"><div class="group-title">之後開放</div><div class="card">
-    <div class="item muted"><span class="label">提醒通知</span><span class="val">準備中</span></div>
     <div class="item muted"><span class="label">從小月曆搬移舊紀錄</span><span class="val">準備中</span></div>
   </div></div>
 
@@ -409,6 +420,121 @@ function renderSettings() {
   </div></div>
 
   <p class="footnote">沒有廣告、沒有追蹤<br>所有紀錄只存在這支手機裡<br>版本 ${APP_VERSION}</p>`;
+}
+
+/* ---------- 提醒通知 ---------- */
+const pushReady = () => !PUSH_SERVER.includes('__SUB__');
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+function b64uToBytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+function randomSecret() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, '0')).join('');
+}
+// 算出接下來要提醒的時間（通知文字不寫「生理期」等字眼）
+function computeReminders() {
+  const out = [], stats = computeStats(), nowMs = Date.now();
+  const at = (dateStr, hour) => { const d = parse(dateStr); d.setHours(hour, 0, 0, 0); return d.getTime(); };
+  if (stats.ps.length) {
+    const next = nextPredicted(stats);
+    out.push({ at: at(addDays(next, -2), 9), title: '週期', body: `🌙 ${md(next)} 左右`, tag: 'soon' });
+    out.push({ at: at(next, 9), title: '週期', body: '🌙 今天記得看一下', tag: 'day' });
+    const p = state.settings.push || {};
+    const base = state.settings.lastBackup ? state.settings.lastBackup.slice(0, 10) : (p.since || todayISO());
+    out.push({ at: at(addDays(base, 30), 20), title: '週期', body: '☁️ 該備份囉', tag: 'backup' });
+  }
+  return out.filter(r => r.at > nowMs).sort((a, b) => a.at - b.at);
+}
+let pushTimer;
+function schedulePushSync() {
+  const p = state.settings.push;
+  if (!p || !p.enabled) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => pushSync(false), 800);
+}
+async function pushSync(force) {
+  const p = state.settings.push;
+  if (!p || !p.enabled || !pushReady() || !pushSupported()) return false;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) { p.enabled = false; writeStore(); if (view === 'settings') renderSettings(); return false; }
+    const reminders = computeReminders();
+    const sig = JSON.stringify([sub.endpoint, reminders.map(r => [r.at, r.body])]);
+    if (!force && sig === p.lastSig) return true;
+    const res = await fetch(PUSH_SERVER + '/sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: p.secret, subscription: sub.toJSON(), reminders })
+    });
+    if (!res.ok) return false;
+    p.lastSig = sig; p.lastSync = Date.now();
+    writeStore();
+    return true;
+  } catch (e) { return false; }
+}
+async function enablePush() {
+  if (!pushReady()) { toast('提醒服務還在準備中'); return; }
+  if (isIOS() && !isStandalone()) {
+    await confirmDialog('請從主畫面打開', '提醒通知只能在「加入主畫面」的 App 裡開啟。\n請關掉 Safari，從主畫面的「週期」圖示打開再試一次。', '知道了');
+    return;
+  }
+  if (!pushSupported()) { toast('這支手機的系統版本太舊，沒辦法開啟通知'); return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') {
+    await confirmDialog('沒有允許通知', '可以到 iPhone「設定」→「通知」→「週期」把通知打開，再回來按一次「開啟提醒」。', '知道了');
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(VAPID_PUBLIC) });
+    const old = state.settings.push || {};
+    state.settings.push = { enabled: true, secret: old.secret || randomSecret(), since: old.since || todayISO() };
+    writeStore();
+    const ok = await pushSync(true);
+    renderSettings();
+    toast(ok ? '提醒已開啟' : '連不上提醒服務，請確認有網路再試一次');
+  } catch (e) {
+    toast('開啟失敗，請再試一次');
+  }
+}
+async function disablePush() {
+  const p = state.settings.push;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) await sub.unsubscribe();
+    if (p && p.secret) await fetch(PUSH_SERVER + '/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: p.secret }) });
+  } catch (e) {}
+  state.settings.push = Object.assign({}, p, { enabled: false, lastSig: null });
+  writeStore(); renderSettings(); toast('提醒已關閉');
+}
+async function testPush() {
+  const p = state.settings.push;
+  if (!p || !p.enabled) return;
+  await pushSync(true);
+  try {
+    const res = await fetch(PUSH_SERVER + '/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: p.secret }) });
+    const data = await res.json().catch(() => ({}));
+    toast(res.ok && data.ok ? '已送出，幾秒內會收到' : '送出失敗，請稍後再試');
+  } catch (e) { toast('連不上提醒服務，請確認有網路'); }
+}
+function reminderSettingsHtml() {
+  const p = state.settings.push;
+  if (!pushReady()) return `<div class="item muted"><span class="label">提醒通知</span><span class="val">準備中</span></div>`;
+  if (!p || !p.enabled) {
+    return `<button class="item" data-act="push-on"><span class="label">開啟提醒<small>快來前 2 天、預計當天、該備份時各跳一則通知，文字不會出現「生理期」</small></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>`;
+  }
+  const list = computeReminders().slice(0, 3).map(r => {
+    const d = new Date(r.at);
+    return `<div class="item"><span class="label">${d.getMonth() + 1}/${d.getDate()} ${d.getHours() < 12 ? '上午' : '晚上'} ${d.getHours() > 12 ? d.getHours() - 12 : d.getHours()}:00<small>${esc(r.body)}</small></span></div>`;
+  }).join('');
+  return `<div class="item"><span class="label">提醒已開啟</span><button class="btn ghost small" data-act="push-off">關閉</button></div>
+    <button class="item" data-act="push-test"><span class="label">傳一則測試通知</span><svg class="chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
+    ${list || '<div class="item muted"><span class="label">記錄第一次生理期後，就會排好提醒</span></div>'}`;
 }
 
 /* ---------- 備份與還原 ---------- */
@@ -554,6 +680,9 @@ document.addEventListener('click', async e => {
       save(); renderSettings(); toast(`已新增「${v}」`);
       break;
     }
+    case 'push-on': await enablePush(); break;
+    case 'push-off': await disablePush(); break;
+    case 'push-test': await testPush(); break;
     case 'restore-sym': state.settings.hiddenSymptoms = []; save(); renderSettings(); break;
     case 'clear': {
       const ok = await confirmDialog('清除所有資料？', '所有生理期與身體狀況紀錄都會刪除，而且無法復原。\n建議先匯出備份。', '全部清除', true);
@@ -615,7 +744,7 @@ $('import-file').addEventListener('change', e => { const f = e.target.files[0]; 
 })();
 
 // 過了午夜或從背景回來時更新「今天」
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { state = load(); render(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { state = load(); render(); pushSync(false); } });
 
 // 離線也能用
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
@@ -623,3 +752,4 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 render();
+setTimeout(() => pushSync(false), 1500);

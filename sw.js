@@ -1,5 +1,5 @@
 // 讓 App 沒有網路也能打開：先試著拿最新版，拿不到就用存在手機裡的版本。
-const CACHE = 'cycle-v3';
+const CACHE = 'cycle-v4';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest'];
 const ICONS = ['icon-180.png', 'icon-192.png', 'icon-512.png'];
 
@@ -24,4 +24,21 @@ self.addEventListener('fetch', e => {
       })
       .catch(() => caches.match(req, { ignoreSearch: true }).then(r => r || caches.match('index.html')))
   );
+});
+
+// 收到提醒時顯示通知
+self.addEventListener('push', e => {
+  let msg = { title: '週期', body: '🌙' };
+  try { msg = Object.assign(msg, e.data.json()); } catch (err) {}
+  e.waitUntil(self.registration.showNotification(msg.title, {
+    body: msg.body, tag: msg.tag || 'cycle', icon: 'icon-192.png', badge: 'icon-192.png'
+  }));
+});
+// 點通知就打開 App
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    for (const c of list) if ('focus' in c) return c.focus();
+    return self.clients.openWindow('./');
+  }));
 });

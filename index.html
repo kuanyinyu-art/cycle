@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>週期</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="週期">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" id="theme-color" content="#18222F">
+<script>
+  /* 開啟前先套用外觀，避免畫面閃一下 */
+  (function () {
+    var t = 'dark';
+    try { var s = JSON.parse(localStorage.getItem('cycle-app-v1') || '{}'); if (s.settings && s.settings.theme) t = s.settings.theme; } catch (e) {}
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- 月曆 -->
+  <section id="view-calendar" class="view active" aria-label="月曆">
+    <header class="status" id="status"></header>
+    <div id="backup-banner"></div>
+    <div class="card cal-card">
+      <div class="cal-head">
+        <button class="icon-btn" id="prev-month" aria-label="上個月">
+          <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <button class="month-title" id="month-title"></button>
+        <button class="icon-btn" id="next-month" aria-label="下個月">
+          <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+      <div class="weekdays"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+      <div class="grid" id="grid"></div>
+      <div class="legend">
+        <span><i class="lg lg-period"></i>生理期</span>
+        <span><i class="lg lg-pred"></i>預測</span>
+        <span><i class="lg lg-log"></i>有紀錄</span>
+      </div>
+    </div>
+    <button class="today-btn" id="today-btn" hidden>回到今天</button>
+  </section>
+
+  <!-- 紀錄 -->
+  <section id="view-history" class="view" aria-label="紀錄與統計">
+    <h1 class="page-title">紀錄</h1>
+    <div class="stats" id="stats"></div>
+    <div id="history"></div>
+  </section>
+
+  <!-- 設定 -->
+  <section id="view-settings" class="view" aria-label="設定">
+    <h1 class="page-title">設定</h1>
+    <div id="settings"></div>
+  </section>
+
+  <nav class="tabbar" aria-label="主選單">
+    <button class="tab active" data-view="calendar">
+      <svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>
+      <span>月曆</span>
+    </button>
+    <button class="tab" data-view="history">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+      <span>紀錄</span>
+    </button>
+    <button class="tab" data-view="settings">
+      <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      <span>設定</span>
+    </button>
+  </nav>
+</div>
+
+<!-- 某一天的小卡片 -->
+<div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" hidden>
+  <div class="sheet-grip"></div>
+  <button class="sheet-close" id="sheet-close" aria-label="關閉">完成</button>
+  <div class="sheet-body" id="sheet-body"></div>
+</div>
+
+<!-- 確認視窗 -->
+<div class="dialog-backdrop" id="dialog" hidden>
+  <div class="dialog" role="alertdialog" aria-modal="true">
+    <h3 id="dialog-title"></h3>
+    <p id="dialog-msg"></p>
+    <div class="dialog-actions">
+      <button class="btn ghost" id="dialog-cancel">取消</button>
+      <button class="btn" id="dialog-ok">確定</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<input type="file" id="import-file" accept="application/json,.json" hidden>
+
+<script src="app.js"></script>
+</body>
+</html>
